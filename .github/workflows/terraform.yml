@@ -1,0 +1,133 @@
+name: Terraform CI/CD - LiveKit Infra
+
+on:
+  pull_request:
+    paths:
+      - 'livekit/infra/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'livekit/infra/**'
+
+permissions:
+  contents: 'read'     # needed by checkout
+  id-token: 'write'    # only if you use OIDC (not required here)
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan (PRs & push)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.6.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Create terraform.tfvars from secrets
+        working-directory: livekit/infra
+        run: |
+          # Create terraform.tfvars dynamically (values come from repo secrets)
+          cat > terraform.tfvars <<'TFVARS'
+          aws_region        = "${{ secrets.AWS_REGION }}"
+          tfstate_s3_bucket = "${{ secrets.TFSTATE_S3_BUCKET }}"
+          key_name          = "${{ secrets.TF_VAR_key_name }}"
+          allowed_ssh_cidr  = "${{ secrets.TF_VAR_allowed_ssh_cidr }}"
+          instance_type     = "${{ secrets.TF_VAR_instance_type }}"
+          vpc_cidr          = "${{ secrets.TF_VAR_vpc_cidr }}"
+          public_subnet_cidr = "${{ secrets.TF_VAR_public_subnet_cidr }}"
+          availability_zone = "${{ secrets.TF_VAR_availability_zone }}"
+          ami_id            = "${{ secrets.TF_VAR_ami_id }}"
+
+          livekit_api_key    = "${{ secrets.TF_VAR_livekit_api_key }}"
+          livekit_api_secret = "${{ secrets.TF_VAR_livekit_api_secret }}"
+          TFVARS
+
+      - name: Terraform Init (reconfigure)
+        working-directory: livekit/infra
+        run: terraform init -input=false -reconfigure
+
+      - name: Terraform Format Check
+        working-directory: livekit/infra
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        working-directory: livekit/infra
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: livekit/infra
+        run: |
+          terraform plan -input=false -var-file="terraform.tfvars" -out=tfplan
+      - name: Upload plan artifact (optional)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: livekit/infra/tfplan
+
+  terraform-apply:
+    name: Terraform Apply (main)
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.6.0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Create terraform.tfvars from secrets
+        working-directory: livekit/infra
+        run: |
+          cat > terraform.tfvars <<'TFVARS'
+          aws_region        = "${{ secrets.AWS_REGION }}"
+          tfstate_s3_bucket = "${{ secrets.TFSTATE_S3_BUCKET }}"
+          key_name          = "${{ secrets.TF_VAR_key_name }}"
+          allowed_ssh_cidr  = "${{ secrets.TF_VAR_allowed_ssh_cidr }}"
+          instance_type     = "${{ secrets.TF_VAR_instance_type }}"
+          vpc_cidr          = "${{ secrets.TF_VAR_vpc_cidr }}"
+          public_subnet_cidr = "${{ secrets.TF_VAR_public_subnet_cidr }}"
+          availability_zone = "${{ secrets.TF_VAR_availability_zone }}"
+          ami_id            = "${{ secrets.TF_VAR_ami_id }}"
+
+          livekit_api_key    = "${{ secrets.TF_VAR_livekit_api_key }}"
+          livekit_api_secret = "${{ secrets.TF_VAR_livekit_api_secret }}"
+          TFVARS
+
+      - name: Terraform Init (reconfigure)
+        working-directory: livekit/infra
+        run: terraform init -input=false -reconfigure
+
+      - name: Terraform Apply
+        working-directory: livekit/infra
+        run: terraform apply -input=false -auto-approve -var-file="terraform.tfvars"
+
+      - name: Show outputs
+        working-directory: livekit/infra
+        run: terraform output -json
