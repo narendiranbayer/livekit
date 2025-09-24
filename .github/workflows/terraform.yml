@@ -1,6 +1,7 @@
 name: Terraform CI/CD - LiveKit Infra
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - 'livekit/infra/**'
